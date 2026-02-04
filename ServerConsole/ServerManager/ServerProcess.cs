@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace ServerConsole.ServerManager
@@ -16,6 +17,20 @@ namespace ServerConsole.ServerManager
         private readonly CancellationTokenSource _cts = new();
         private bool _disposed = false;
 
+        [DllImport("Kernel32")]
+        private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate HandlerRoutine, bool Add);
+
+        private delegate bool ConsoleCtrlDelegate(CtrlTypes CtrlType);
+
+        private enum CtrlTypes
+        {
+            CTRL_C_EVENT = 0,
+            CTRL_BREAK_EVENT = 1,
+            CTRL_CLOSE_EVENT = 2,
+            CTRL_LOGOFF_EVENT = 5,
+            CTRL_SHUTDOWN_EVENT = 6
+        }
+
         public ServerProcess(int port)
         {
             _port = port;
@@ -24,6 +39,9 @@ namespace ServerConsole.ServerManager
             {
                 Console.Title = $"SiteFrostfall Dedicated Server Console | Port: {port} | Windows x{Environment.OSVersion.Version.Major} " +
                                 $"| (PID: {Process.GetCurrentProcess().Id})";
+
+                // 设置控制台关闭事件处理器
+                SetConsoleCtrlHandler(new ConsoleCtrlDelegate(ConsoleHandler), true);
             }
 
             if (!File.Exists(SERVER_EXECUTABLE_NAME))
@@ -82,8 +100,18 @@ namespace ServerConsole.ServerManager
             }
         }
 
+        // 在 ServerProcess.cs 中添加字段
+        private readonly Dictionary<string, ConsoleCommand> _dynamicCommands = new();
+
+        // 修改 StartInputListener 方法中的循环部分：
         private void StartInputListener()
         {
+            // 注册需要上下文的命令（如 exit）
+            var exitCmd = new ExitCommand(Shutdown);
+            _dynamicCommands["exit"] = exitCmd;
+            _dynamicCommands["quit"] = exitCmd;
+            _dynamicCommands["shutdown"] = exitCmd;
+
             Thread inputThread = new Thread(() =>
             {
                 Logger.InternalLog_h("Console input listener started. Type 'help' for commands.", LogLevel.Info);
@@ -92,34 +120,37 @@ namespace ServerConsole.ServerManager
                     try
                     {
                         string? input = Console.ReadLine();
-                        if (input == null) break; // EOF (e.g., Ctrl+Z on Windows)
+                        if (input == null) break;
 
                         input = input.Trim();
                         if (string.IsNullOrEmpty(input)) continue;
 
-                        // 处理内置控制台命令
-                        if (input.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
-                            input.Equals("quit", StringComparison.OrdinalIgnoreCase) ||
-                            input.Equals("shutdown", StringComparison.OrdinalIgnoreCase))
-                        {
-                            Logger.InternalLog_h("Shutdown command received from console.", LogLevel.Info);
-                            Shutdown();
-                            break;
-                        }
+                        // 分割命令和参数
+                        string[] parts = input.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length == 0) continue;
 
-                        if (input.Equals("help", StringComparison.OrdinalIgnoreCase))
+                        string commandName = parts[0].ToLowerInvariant();
+                        string[] args = parts.Skip(1).ToArray();
+
+                        // 优先检查动态命令（如 exit），再查注册命令
+                        if (_dynamicCommands.TryGetValue(commandName, out var dynamicCmd))
                         {
-                            Console.WriteLine("Available commands:");
-                            Console.WriteLine("  help       - Show this help");
-                            Console.WriteLine("  exit/quit  - Gracefully shut down the server");
-                            Console.WriteLine("  <any text> - Send command to the Unity server");
+                            dynamicCmd.Execute(args);
                             continue;
                         }
 
-                        // 发送给 Unity 子进程
-                        if (_process != null && !_process.HasExited)
+                        if (CommandRegistry.TryGetCommand(commandName, out var registeredCmd))
                         {
-                            StandardStreamManager.Send(input);
+                            registeredCmd.Execute(args);
+                            continue;
+                        }
+
+                        if (_process != null && !_process.HasExited) { 
+                            Logger.InternalLog_h($"Unknown command: '{commandName}'. Type 'help' for available commands.",LogLevel.Error);
+                        }
+                        else
+                        {
+                            Logger.InternalLog_h($"Unknown command: '{commandName}'. Server not running.", LogLevel.Error);
                         }
                     }
                     catch (Exception ex)
@@ -146,23 +177,57 @@ namespace ServerConsole.ServerManager
         {
             e.Cancel = true; 
             Logger.InternalLog_h("Received shutdown signal. Terminating server process...", LogLevel.Info);
+            _cts.Cancel(); // 取消取消令牌
             Shutdown();
+        }
+
+        private bool ConsoleHandler(CtrlTypes CtrlType)
+        {
+            if (CtrlType == CtrlTypes.CTRL_CLOSE_EVENT)
+            {
+                Logger.InternalLog_h("Received console close signal. Terminating server process...", LogLevel.Info);
+                _cts.Cancel(); // 取消取消令牌
+                Shutdown();
+                return true;
+            }
+            return false;
         }
 
         private void Shutdown()
         {
             if (_disposed) return;
+            _disposed = true;
 
-            // 取消任何等待
-            _cts.Cancel();
-
-            // 终止子进程（如果还在运行）
             try
             {
                 if (_process != null && !_process.HasExited)
                 {
-                    _process.Kill(); // 强制终止
-                    _process.WaitForExit(3000); // 等待最多3秒
+                    if (OperatingSystem.IsWindows())
+                    {
+                        _process.Kill(); // Windows: 强制终止
+                    }
+                    else
+                    {
+                        // Linux: 先尝试 SIGTERM，再强制 SIGKILL
+                        _process.Kill(); // 这是 SIGTERM
+                        if (!_process.WaitForExit(2000))
+                        {
+                            // 如果 2 秒没退出，发 SIGKILL
+                            try
+                            {
+                                using var kill = new Process();
+                                kill.StartInfo.FileName = "kill";
+                                kill.StartInfo.Arguments = $"-9 {_process.Id}";
+                                kill.StartInfo.UseShellExecute = false;
+                                kill.StartInfo.CreateNoWindow = true;
+                                kill.Start();
+                                kill.WaitForExit(1000);
+                            }
+                            catch { /* ignore */ }
+                        }
+                    }
+
+                    _process.WaitForExit(3000);
                 }
             }
             catch (Exception ex)
@@ -170,10 +235,7 @@ namespace ServerConsole.ServerManager
                 Logger.InternalLog_h($"Error while killing server process: {ex.Message}", LogLevel.Error);
             }
 
-            // 清理自身
             Dispose();
-
-            // 退出主程序
             Environment.Exit(0);
         }
 
