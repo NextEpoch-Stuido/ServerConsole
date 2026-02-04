@@ -20,10 +20,8 @@ public static class StandardStreamManager
         if (string.IsNullOrEmpty(message)) return;
 
 #if UNITY_5_3_OR_NEWER
-        // Unity 环境：写入 stdout（会被父进程捕获）
         Console.WriteLine(message);
 #else
-        // 主控台环境：写入子进程的 stdin
         if (_process != null && !_process.HasExited && _process.StandardInput.BaseStream.CanWrite)
         {
             _process.StandardInput.WriteLine(message);

@@ -7,7 +7,7 @@ public class Program
 
     public static void Main(string[] args)
     {
-        int? port = null; // 使用可空类型，便于判断是否已设置
+        int? port = null;
 
         if (OperatingSystem.IsWindows())
         {

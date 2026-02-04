@@ -40,7 +40,6 @@ namespace ServerConsole.ServerManager
                 Console.Title = $"SiteFrostfall Dedicated Server Console | Port: {port} | Windows x{Environment.OSVersion.Version.Major} " +
                                 $"| (PID: {Process.GetCurrentProcess().Id})";
 
-                // 设置控制台关闭事件处理器
                 SetConsoleCtrlHandler(new ConsoleCtrlDelegate(ConsoleHandler), true);
             }
 
@@ -100,13 +99,10 @@ namespace ServerConsole.ServerManager
             }
         }
 
-        // 在 ServerProcess.cs 中添加字段
         private readonly Dictionary<string, ConsoleCommand> _dynamicCommands = new();
 
-        // 修改 StartInputListener 方法中的循环部分：
         private void StartInputListener()
         {
-            // 注册需要上下文的命令（如 exit）
             var exitCmd = new ExitCommand(Shutdown);
             _dynamicCommands["exit"] = exitCmd;
             _dynamicCommands["quit"] = exitCmd;
@@ -125,14 +121,12 @@ namespace ServerConsole.ServerManager
                         input = input.Trim();
                         if (string.IsNullOrEmpty(input)) continue;
 
-                        // 分割命令和参数
                         string[] parts = input.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                         if (parts.Length == 0) continue;
 
                         string commandName = parts[0].ToLowerInvariant();
                         string[] args = parts.Skip(1).ToArray();
 
-                        // 优先检查动态命令（如 exit），再查注册命令
                         if (_dynamicCommands.TryGetValue(commandName, out var dynamicCmd))
                         {
                             dynamicCmd.Execute(args);
@@ -208,11 +202,9 @@ namespace ServerConsole.ServerManager
                     }
                     else
                     {
-                        // Linux: 先尝试 SIGTERM，再强制 SIGKILL
                         _process.Kill(); // 这是 SIGTERM
                         if (!_process.WaitForExit(2000))
                         {
-                            // 如果 2 秒没退出，发 SIGKILL
                             try
                             {
                                 using var kill = new Process();
