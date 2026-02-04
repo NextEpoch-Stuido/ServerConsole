@@ -9,11 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Compile Remove="Manager\**" />
+    <EmbeddedResource Remove="Manager\**" />
+    <None Remove="Manager\**" />
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Manager\" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
 </Project>
