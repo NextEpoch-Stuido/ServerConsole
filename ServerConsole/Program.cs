@@ -1,87 +1,92 @@
 ﻿using ServerConsole.Log;
 using ServerConsole.ServerManager;
+using System.Runtime.InteropServices;
+using System.Text;
 
 public class Program
 {
+    public static string EXE_PATH = "SiteFrostfall.exe";
     private const int DEFAULT_PORT = 7777;
+    // 设为静态方便指令集调用（如 ExitCommand）
+    public static ServerProcess? ServerInstance { get; private set; }
 
     public static void Main(string[] args)
     {
-        int? port = null;
+        InitializeConsole();
+        PrintBanner();
 
-        if (OperatingSystem.IsWindows())
-        {
-            Console.Title = "SiteFrostfall Dedicated Server Console";
-        }
-
-        Logger.InternalLog("Copyright 2025 NextEpoch Studio and \"to0c123\". All Rights Reserved.", LogLevel.Info);
-        Logger.InternalLog("The dedicated server console has been launched.", LogLevel.Info);
-
-        // 尝试从命令行参数解析端口
-        if (args.Length > 0)
-        {
-            for (int i = 0; i < args.Length; i++)
-            {
-                string arg = args[i];
-                if (arg.StartsWith("--port=", StringComparison.OrdinalIgnoreCase))
-                {
-                    string portStr = arg.Substring("--port=".Length);
-                    if (int.TryParse(portStr, out int p) && IsValidPort(p))
-                    {
-                        port = p;
-                        Logger.InternalLog($"Port {p} parsed from '--port=' argument.", LogLevel.Info);
-                        break;
-                    }
-                }
-                else if (arg.Equals("--port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
-                {
-                    if (int.TryParse(args[i + 1], out int p) && IsValidPort(p))
-                    {
-                        port = p;
-                        Logger.InternalLog($"Port {p} parsed from '--port <value>' argument.", LogLevel.Info);
-                        break;
-                    }
-                }
-                else if (int.TryParse(arg, out int p) && IsValidPort(p))
-                {
-                    port = p;
-                    Logger.InternalLog($"Port {p} parsed as positional argument.", LogLevel.Info);
-                    break;
-                }
-            }
-        }
+        int? port = ParsePortFromArgs(args);
 
         // 如果命令行未提供有效端口，则提示用户输入
         while (!port.HasValue)
         {
-            Console.Write("Please enter the server port (1-65535): ");
+            Console.ForegroundColor = ConsoleColor.DarkGreen;
+            Console.Write($"{GetTimeTag()} [Prompt] Enter server port (1-65535): ");
+            Console.ResetColor();
             string? input = Console.ReadLine();
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                Console.WriteLine("Port cannot be empty. Please try again.");
-                continue;
-            }
-
-            if (int.TryParse(input, out int p) && IsValidPort(p))
-            {
-                port = p;
-                Logger.InternalLog($"Port {p} entered by user.", LogLevel.Info);
-            }
-            else
-            {
-                Console.WriteLine("Invalid port number. Please enter a number between 1 and 65535.");
-            }
+            if (int.TryParse(input, out int p) && IsValidPort(p)) port = p;
+            else Logger.Print("Invalid port number. Please enter a number between 1 and 65535.",ConsoleColor.Red);
         }
 
-        Logger.InternalLog($"Server will listen on port: {port}", LogLevel.Info);
+        Logger.InternalLog_h($"Initializing site on PORT: {port}", LogLevel.Info);
 
-
-        using var server = new ServerProcess(port.Value);
-        server.WaitForExit();
+        // 启动进程
+        using (ServerInstance = new ServerProcess(EXE_PATH, $"--port {port}"))
+        {
+            ServerInstance.Start();
+            while (ServerInstance.IsRunning)
+            {
+                Thread.Sleep(500);
+            }
+        }
     }
 
-    private static bool IsValidPort(int port)
+    private static void InitializeConsole()
     {
-        return port >= 1 && port <= 65535;
+        Console.OutputEncoding = Encoding.UTF8;
+        if (OperatingSystem.IsWindows())
+        {
+            Console.Title = "SiteFrostfall | Dedicated Server Console";
+        }
     }
+
+    private static void PrintBanner()
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine(@"
+ ███████╗██╗████████╗███████╗          ███████╗██████╗  ██████╗ ███████╗████████╗███████╗ █████╗ ██╗     ██╗     
+ ██╔════╝██║╚══██╔══╝██╔════╝          ██╔════╝██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗██║     ██║     
+ ███████╗██║   ██║   █████╗   ███████╗ █████╗  ██████╔╝██║   ██║███████╗   ██║   █████╗  ███████║██║     ██║     
+ ╚════██║██║   ██║   ██╔══╝   ╚══════╝ ██╔══╝  ██╔══██╗██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██║██║     ██║     
+ ███████║██║   ██║   ███████╗          ██║     ██║  ██║╚██████╔╝███████║   ██║   ██║     ██║  ██║███████╗███████╗
+ ╚══════╝╚═╝   ╚═╝   ╚══════╝          ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝");
+
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine(" -----------------------------------------------------------------------------------------------------------------");
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.WriteLine("  Copyright 2025 NextEpoch Studio & to0c123. All Rights Reserved.");
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine(" -----------------------------------------------------------------------------------------------------------------\n");
+        Console.ResetColor();
+    }
+
+    private static string GetTimeTag() => $"[{DateTime.Now:HH:mm:ss}]";
+
+    private static int? ParsePortFromArgs(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i].StartsWith("--port=", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(args[i].Substring(7), out int p) && IsValidPort(p)) return p;
+            }
+            else if (args[i].Equals("--port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                if (int.TryParse(args[i + 1], out int p) && IsValidPort(p)) return p;
+            }
+        }
+        return null;
+    }
+
+    private static bool IsValidPort(int port) => port >= 1 && port <= 65535;
 }

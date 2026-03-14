@@ -1,287 +1,154 @@
-﻿using ServerConsole.Log;
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
+using ServerConsole.Log;
 
 namespace ServerConsole.ServerManager
 {
     public class ServerProcess : IDisposable
     {
-        private static readonly string SERVER_EXECUTABLE_NAME =
-            OperatingSystem.IsWindows() ? "SiteFrostfall.exe" : "SiteFrostfall";
+        private Process? _process;
+        private readonly string _exePath;
+        private readonly string _args;
+        private bool _isShuttingDown;
 
-        private readonly Process? _process;
-        private readonly int _port;
-        private readonly CancellationTokenSource _cts = new();
-        private bool _disposed = false;
+        public bool IsRunning => _process != null && !_process.HasExited && !_isShuttingDown;
 
-        [DllImport("Kernel32")]
-        private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate HandlerRoutine, bool Add);
-
-        private delegate bool ConsoleCtrlDelegate(CtrlTypes CtrlType);
-
-        private enum CtrlTypes
+        public ServerProcess(string exePath, string arguments = "")
         {
-            CTRL_C_EVENT = 0,
-            CTRL_BREAK_EVENT = 1,
-            CTRL_CLOSE_EVENT = 2,
-            CTRL_LOGOFF_EVENT = 5,
-            CTRL_SHUTDOWN_EVENT = 6
+            _exePath = exePath;
+            _args = arguments;
         }
 
-        public ServerProcess(int port)
+        public void Start()
         {
-            _port = port;
-
-            if (OperatingSystem.IsWindows())
+            if (!File.Exists(_exePath))
             {
-                Console.Title = $"SiteFrostfall Dedicated Server Console | Port: {port} | Windows x{Environment.OSVersion.Version.Major} " +
-                                $"| (PID: {Process.GetCurrentProcess().Id})";
-
-                SetConsoleCtrlHandler(new ConsoleCtrlDelegate(ConsoleHandler), true);
+                Logger.InternalLog_h($"Target executable not found: '{_exePath}'", LogLevel.Error);
+                return;
             }
-
-            if (!File.Exists(SERVER_EXECUTABLE_NAME))
-            {
-                var currentDir = Directory.GetCurrentDirectory();
-                throw new FileNotFoundException(
-                    $"Server executable '{SERVER_EXECUTABLE_NAME}' not found in: {currentDir}");
-            }
-
-            if (OperatingSystem.IsLinux())
-            {
-                EnsureExecutablePermission(SERVER_EXECUTABLE_NAME);
-            }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = SERVER_EXECUTABLE_NAME,
-                Arguments = $"-batchmode -nographics -port {port}",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8
-            };
 
             try
             {
-                _process = new Process { StartInfo = startInfo };
-                _process.EnableRaisingEvents = true;
-                _process.Exited += OnChildProcessExited;
-
-                _process.Start();
-
-                StandardStreamManager.AttachToProcess(_process);
-
-                StandardStreamManager.OnReceive += msg =>
+                ProcessStartInfo psi = new ProcessStartInfo
                 {
-                    if (!string.IsNullOrEmpty(msg))
-                        Logger.InternalLog_h($"[Unity Server] {msg}", LogLevel.Info);
+                    FileName = _exePath,
+                    Arguments = _args,
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8
                 };
 
-                StandardStreamManager.Send("handshake");
+                _process = new Process { StartInfo = psi };
+                _process.EnableRaisingEvents = true;
 
-                Logger.InternalLog_h($"Launched server on port {_port} with PID {_process.Id}.", LogLevel.Info);
+                _process.Exited += (s, e) =>
+                {
+                    if (!_isShuttingDown)
+                    {
+                        Logger.InternalLog_h("Game process has exited. Terminating console...", LogLevel.Warning);
+                        _isShuttingDown = true;
+                        // 结束控制台进程
+                        Environment.Exit(0);
+                    }
+                };
 
-                Console.CancelKeyPress += OnMainProcessExit;
-                StartInputListener();
+                _process.OutputDataReceived += (s, e) => ParseUnityOutput(e.Data);
+                _process.ErrorDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        Logger.InternalLog_h($"[Unity-Error] {e.Data}", LogLevel.Error);
+                };
+
+                if (_process.Start())
+                {
+                    _process.BeginOutputReadLine();
+                    _process.BeginErrorReadLine();
+
+                    // 启动控制台输入监听
+                    Thread inputThread = new Thread(InputLoop)
+                    {
+                        IsBackground = true,
+                        Name = "ConsoleInputHandler"
+                    };
+                    inputThread.Start();
+
+                    Logger.InternalLog_h($"Process linked successfully. PID: {_process.Id}", LogLevel.Success);
+                }
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException(
-                    $"Failed to start server process '{SERVER_EXECUTABLE_NAME}' with args '-port {port}'.", ex);
+                Logger.InternalLog_h($"Failed to start server process: {ex.Message}", LogLevel.Error);
             }
         }
-
-        private readonly Dictionary<string, ConsoleCommand> _dynamicCommands = new();
-
-        private void StartInputListener()
+        private void InputLoop()
         {
-            var exitCmd = new ExitCommand(Shutdown);
-            _dynamicCommands["exit"] = exitCmd;
-            _dynamicCommands["quit"] = exitCmd;
-            _dynamicCommands["shutdown"] = exitCmd;
-
-            Thread inputThread = new Thread(() =>
+            while (IsRunning)
             {
-                Logger.InternalLog_h("Console input listener started. Type 'help' for commands.", LogLevel.Info);
-                while (!_cts.Token.IsCancellationRequested && (_process?.HasExited == false))
+                string? input = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(input) || !IsRunning) continue;
+
+                string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string cmdName = parts[0].ToLowerInvariant();
+                string[] args = parts.Length > 1 ? parts[1..] : Array.Empty<string>();
+
+                if (CommandRegistry.TryGetCommand(cmdName, out var command))
                 {
-                    try
-                    {
-                        string? input = Console.ReadLine();
-                        if (input == null) break;
-
-                        input = input.Trim();
-                        if (string.IsNullOrEmpty(input)) continue;
-
-                        string[] parts = input.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length == 0) continue;
-
-                        string commandName = parts[0].ToLowerInvariant();
-                        string[] args = parts.Skip(1).ToArray();
-
-                        if (_dynamicCommands.TryGetValue(commandName, out var dynamicCmd))
-                        {
-                            dynamicCmd.Execute(args);
-                            continue;
-                        }
-
-                        if (CommandRegistry.TryGetCommand(commandName, out var registeredCmd))
-                        {
-                            registeredCmd.Execute(args);
-                            continue;
-                        }
-
-                        if (_process != null && !_process.HasExited) { 
-                            Logger.InternalLog_h($"Unknown command: '{commandName}'. Type 'help' for available commands.",LogLevel.Error);
-                        }
-                        else
-                        {
-                            Logger.InternalLog_h($"Unknown command: '{commandName}'. Server not running.", LogLevel.Error);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.InternalLog_h($"Error in input thread: {ex.Message}", LogLevel.Error);
-                    }
+                    command!.Execute(args);
                 }
-            })
-            {
-                IsBackground = true,
-                Name = "ConsoleInputThread"
-            };
-
-            inputThread.Start();
-        }
-
-        private void OnChildProcessExited(object sender, EventArgs e)
-        {
-            Logger.InternalLog_h("Server process has exited. Shutting down console...", LogLevel.Warning);
-            Shutdown();
-        }
-
-        private void OnMainProcessExit(object? sender, ConsoleCancelEventArgs e)
-        {
-            e.Cancel = true; 
-            Logger.InternalLog_h("Received shutdown signal. Terminating server process...", LogLevel.Info);
-            _cts.Cancel(); // 取消取消令牌
-            Shutdown();
-        }
-
-        private bool ConsoleHandler(CtrlTypes CtrlType)
-        {
-            if (CtrlType == CtrlTypes.CTRL_CLOSE_EVENT)
-            {
-                Logger.InternalLog_h("Received console close signal. Terminating server process...", LogLevel.Info);
-                _cts.Cancel(); // 取消取消令牌
-                Shutdown();
-                return true;
+                else
+                {
+                    SendRemoteCommand(cmdName, args);
+                }
             }
-            return false;
         }
 
-        private void Shutdown()
+        public void SendRemoteCommand(string cmdName, string[] args)
         {
-            if (_disposed) return;
-            _disposed = true;
+            if (!IsRunning) return;
+            string payload = args.Length > 0 ? $"CMD:{cmdName}|{string.Join("|", args)}" : $"CMD:{cmdName}";
+            try
+            {
+                _process?.StandardInput.WriteLine(payload);
+            }
+            catch { /* 忽略写入错误 */ }
+        }
+
+        private void ParseUnityOutput(string? data)
+        {
+            if (string.IsNullOrEmpty(data)) return;
+            Logger.InternalLog_h(data, LogLevel.Debug);
+        }
+
+        public void Stop()
+        {
+            if (_isShuttingDown) return;
+            _isShuttingDown = true;
 
             try
             {
                 if (_process != null && !_process.HasExited)
                 {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        _process.Kill(); // Windows: 强制终止
-                    }
-                    else
-                    {
-                        _process.Kill(); // 这是 SIGTERM
-                        if (!_process.WaitForExit(2000))
-                        {
-                            try
-                            {
-                                using var kill = new Process();
-                                kill.StartInfo.FileName = "kill";
-                                kill.StartInfo.Arguments = $"-9 {_process.Id}";
-                                kill.StartInfo.UseShellExecute = false;
-                                kill.StartInfo.CreateNoWindow = true;
-                                kill.Start();
-                                kill.WaitForExit(1000);
-                            }
-                            catch { /* ignore */ }
-                        }
-                    }
-
-                    _process.WaitForExit(3000);
+                    Logger.InternalLog_h("Killing Unity process...", LogLevel.Warning);
+                    _process.Kill(true);
+                    _process.WaitForExit(1000);
                 }
             }
             catch (Exception ex)
             {
-                Logger.InternalLog_h($"Error while killing server process: {ex.Message}", LogLevel.Error);
-            }
-
-            Dispose();
-            Environment.Exit(0);
-        }
-
-        public void WaitForExit()
-        {
-            _process?.WaitForExit();
-        }
-
-        public bool HasExited => _process?.HasExited ?? true;
-        public int? ExitCode => _process?.ExitCode;
-
-        private static void EnsureExecutablePermission(string filePath)
-        {
-            if (!OperatingSystem.IsLinux()) return;
-            try
-            {
-                using var chmod = new Process();
-                chmod.StartInfo.FileName = "chmod";
-                chmod.StartInfo.Arguments = $"+x \"{filePath}\"";
-                chmod.StartInfo.UseShellExecute = false;
-                chmod.StartInfo.CreateNoWindow = true;
-                chmod.Start();
-                chmod.WaitForExit();
-                if (chmod.ExitCode != 0)
-                {
-                    Logger.InternalLog_h($"[Warning] Failed to chmod +x '{filePath}'", LogLevel.Warning);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.InternalLog_h($"[Warning] chmod failed: {ex.Message}", LogLevel.Warning);
+                Logger.InternalLog_h($"Error during process kill: {ex.Message}", LogLevel.Debug);
             }
         }
 
-        // --- IDisposable ---
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-
-            Console.CancelKeyPress -= OnMainProcessExit;
-            if (_process != null)
-            {
-                _process.Exited -= OnChildProcessExited;
-                _process.Dispose();
-            }
-            _cts.Dispose();
-
-            GC.SuppressFinalize(this);
-        }
-
-        ~ServerProcess()
-        {
-            Dispose();
+            Stop();
+            _process?.Dispose();
         }
     }
 }
