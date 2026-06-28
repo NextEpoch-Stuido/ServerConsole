@@ -24,6 +24,81 @@ namespace ServerConsole.Log
             {LogLevel.Debug,"[Debug] [{0}]: " },
             {LogLevel.Error,"[Error] [{0}]: " }
         };
+        /// <summary>
+        /// 将常见颜色名称字符串转换为 ConsoleColor 枚举。
+        /// 不区分大小写，支持中文别名。找不到时返回 null。
+        /// </summary>
+        public static ConsoleColor? GetColor(string colorName)
+        {
+            if (string.IsNullOrEmpty(colorName))
+                return null;
+
+            return colorName.ToLowerInvariant() switch
+            {
+                "black" or "黑色" => ConsoleColor.Black,
+                "darkblue" or "深蓝色" => ConsoleColor.DarkBlue,
+                "darkgreen" or "深绿色" => ConsoleColor.DarkGreen,
+                "darkcyan" or "深青色" => ConsoleColor.DarkCyan,
+                "darkred" or "深红色" => ConsoleColor.DarkRed,
+                "darkmagenta" or "深洋红" => ConsoleColor.DarkMagenta,
+                "darkyellow" or "深黄色" => ConsoleColor.DarkYellow,
+                "gray" or "灰色" => ConsoleColor.Gray,
+                "darkgray" or "深灰色" => ConsoleColor.DarkGray,
+                "blue" or "蓝色" => ConsoleColor.Blue,
+                "green" or "绿色" => ConsoleColor.Green,
+                "cyan" or "青色" => ConsoleColor.Cyan,
+                "red" or "红色" => ConsoleColor.Red,
+                "magenta" or "洋红" => ConsoleColor.Magenta,
+                "yellow" or "黄色" => ConsoleColor.Yellow,
+                "white" or "白色" => ConsoleColor.White,
+                _ => null
+            };
+        }
+
+        /// <summary>
+        /// 使用字符串颜色名输出文本（不换行）。
+        /// </summary>
+        public static void Print(string message, string colorName)
+        {
+            ConsoleColor? color = GetColor(colorName);
+            if (color.HasValue)
+                StandardOutput.Print_c(message, color.Value);
+            else
+                StandardOutput.Print(message); // 未识别颜色时正常输出
+        }
+
+        /// <summary>
+        /// 使用字符串颜色名输出格式化文本（不换行）。
+        /// </summary>
+        public static void Print(string message, string colorName, params object[] args)
+        {
+            ConsoleColor? color = GetColor(colorName);
+            if (color.HasValue)
+                StandardOutput.Printf_c(message, color.Value, args);
+            else
+                StandardOutput.Printf(message, args);
+        }
+
+        // 以下为便捷的自定义颜色日志输出（带时间戳和标签）
+        public static void Log(string message, string colorName, string tag = null)
+        {
+            string header = string.IsNullOrEmpty(tag) ? "" : $"[{tag}] ";
+            ConsoleColor? color = GetColor(colorName);
+            if (color.HasValue)
+                StandardOutput.Printfln_c($"{header}{message}", color.Value);
+            else
+                StandardOutput.Println($"{header}{message}");
+        }
+
+        public static void Log(string message, string colorName, string tag, params object[] args)
+        {
+            string header = string.IsNullOrEmpty(tag) ? "" : $"[{tag}] ";
+            ConsoleColor? color = GetColor(colorName);
+            if (color.HasValue)
+                StandardOutput.Printfln_c($"{header}{message}", color.Value, args);
+            else
+                StandardOutput.Printfln($"{header}{message}", args);
+        }
         internal static void InternalLog_h(string message, LogLevel level)
         {
             StandardOutput.Printfln_c(LogHeader[level] + message, (ConsoleColor)level, new object[] { DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") });
@@ -43,6 +118,14 @@ namespace ServerConsole.Log
         public static void Print(string message, ConsoleColor color, params object[] args)
         {
             StandardOutput.Printfln_c(message, color, args);
+        }
+
+        public static void Out(string message, ConsoleColor color, string info = "[Unity]")
+        {
+            string time = DateTime.Now.ToString("HH:mm:ss");
+            string prefix = string.IsNullOrWhiteSpace(info) ? "[Unity]" : info;
+
+            StandardOutput.Printfln_c($"[{time}] {prefix} {message}", color);
         }
     }
     public class StandardOutput

@@ -41,7 +41,8 @@ namespace ServerConsole.ServerManager
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
                 };
 
                 _process = new Process { StartInfo = psi };
@@ -53,16 +54,18 @@ namespace ServerConsole.ServerManager
                     {
                         Logger.InternalLog_h("Game process has exited. Terminating console...", LogLevel.Warning);
                         _isShuttingDown = true;
-                        // 结束控制台进程
                         Environment.Exit(0);
                     }
                 };
 
                 _process.OutputDataReceived += (s, e) => ParseUnityOutput(e.Data);
+
                 _process.ErrorDataReceived += (s, e) =>
                 {
                     if (!string.IsNullOrEmpty(e.Data))
+                    {
                         Logger.InternalLog_h($"[Unity-Error] {e.Data}", LogLevel.Error);
+                    }
                 };
 
                 if (_process.Start())
@@ -70,12 +73,12 @@ namespace ServerConsole.ServerManager
                     _process.BeginOutputReadLine();
                     _process.BeginErrorReadLine();
 
-                    // 启动控制台输入监听
                     Thread inputThread = new Thread(InputLoop)
                     {
                         IsBackground = true,
                         Name = "ConsoleInputHandler"
                     };
+
                     inputThread.Start();
 
                     Logger.InternalLog_h($"Process linked successfully. PID: {_process.Id}", LogLevel.Success);
@@ -86,12 +89,17 @@ namespace ServerConsole.ServerManager
                 Logger.InternalLog_h($"Failed to start server process: {ex.Message}", LogLevel.Error);
             }
         }
+
         private void InputLoop()
         {
             while (IsRunning)
             {
                 string? input = Console.ReadLine();
-                if (string.IsNullOrWhiteSpace(input) || !IsRunning) continue;
+
+                if (string.IsNullOrWhiteSpace(input) || !IsRunning)
+                {
+                    continue;
+                }
 
                 string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 string cmdName = parts[0].ToLowerInvariant();
@@ -110,24 +118,115 @@ namespace ServerConsole.ServerManager
 
         public void SendRemoteCommand(string cmdName, string[] args)
         {
-            if (!IsRunning) return;
-            string payload = args.Length > 0 ? $"CMD:{cmdName}|{string.Join("|", args)}" : $"CMD:{cmdName}";
+            if (!IsRunning)
+            {
+                return;
+            }
+
+            string payload = args.Length > 0
+                ? $"CMD:{cmdName}|{string.Join("|", args)}"
+                : $"CMD:{cmdName}";
+
             try
             {
                 _process?.StandardInput.WriteLine(payload);
+                _process?.StandardInput.Flush();
             }
-            catch { /* 忽略写入错误 */ }
+            catch
+            {
+                // 忽略写入错误
+            }
         }
 
         private void ParseUnityOutput(string? data)
         {
-            if (string.IsNullOrEmpty(data)) return;
-            Logger.InternalLog_h(data, LogLevel.Debug);
+            if (string.IsNullOrWhiteSpace(data))
+            {
+                return;
+            }
+
+            if (data.StartsWith("OUT:", StringComparison.OrdinalIgnoreCase))
+            {
+                ParseOutMessage(data.Substring(4));
+                return;
+            }
+
+            if (data.StartsWith("RESPONSE:", StringComparison.OrdinalIgnoreCase))
+            {
+                string response = data.Substring("RESPONSE:".Length);
+                Logger.Print($"[Unity.Response] {response}", ConsoleColor.Green);
+                return;
+            }
+
+            // 兼容旧协议：LOG:Tag|Message
+            if (data.StartsWith("LOG:", StringComparison.OrdinalIgnoreCase))
+            {
+                ParseLegacyLogMessage(data.Substring(4));
+                return;
+            }
+
+            // 非协议输出，按 Unity 普通输出处理
+            Logger.Print($"[Unity] {data}", ConsoleColor.DarkGray);
+        }
+
+        private void ParseOutMessage(string payload)
+        {
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return;
+            }
+
+            // OUT:颜色枚举数值|信息前缀|内容
+            // Split('|', 3) 可以保证 message 里继续包含 | 时不会被继续切开
+            string[] parts = payload.Split('|', 3);
+
+            if (parts.Length < 3)
+            {
+                Logger.Print($"[Unity.Out.Invalid] {payload}", ConsoleColor.Yellow);
+                return;
+            }
+
+            string colorRaw = parts[0];
+            string info = parts[1];
+            string message = parts[2];
+
+            ConsoleColor color = ConsoleColor.White;
+
+            if (int.TryParse(colorRaw, out int colorValue) &&
+                Enum.IsDefined(typeof(ConsoleColor), colorValue))
+            {
+                color = (ConsoleColor)colorValue;
+            }
+
+            Logger.Out(message, color, info);
+        }
+
+        private void ParseLegacyLogMessage(string payload)
+        {
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return;
+            }
+
+            string[] parts = payload.Split('|', 2);
+
+            if (parts.Length >= 2)
+            {
+                Logger.Out(parts[1], ConsoleColor.White, parts[0]);
+            }
+            else
+            {
+                Logger.Out(payload, ConsoleColor.White, "[Unity.Log]");
+            }
         }
 
         public void Stop()
         {
-            if (_isShuttingDown) return;
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
             _isShuttingDown = true;
 
             try

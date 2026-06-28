@@ -5,7 +5,7 @@ using System.Text;
 
 public class Program
 {
-    public static string EXE_PATH = "SiteFrostfall.exe";
+    public static readonly string EXE_PATH = "SiteFrostfall.exe";
     private const int DEFAULT_PORT = 7777;
     // 设为静态方便指令集调用（如 ExitCommand）
     public static ServerProcess? ServerInstance { get; private set; }
