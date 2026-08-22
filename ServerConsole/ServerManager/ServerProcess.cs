@@ -9,17 +9,36 @@ namespace ServerConsole.ServerManager
 {
     public class ServerProcess : IDisposable
     {
+        private const int GracefulShutdownTimeoutMilliseconds = 15000;
+
         private Process? _process;
         private readonly string _exePath;
         private readonly string _args;
-        private bool _isShuttingDown;
+        private readonly int _serverPort;
+        private readonly object _shutdownLock = new();
+        private volatile bool _isShuttingDown;
+        private bool _serverReady;
 
-        public bool IsRunning => _process != null && !_process.HasExited && !_isShuttingDown;
+        public bool IsRunning
+        {
+            get
+            {
+                try
+                {
+                    return _process != null && !_process.HasExited;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+        }
 
-        public ServerProcess(string exePath, string arguments = "")
+        public ServerProcess(string exePath, string arguments = "", int serverPort = 0)
         {
             _exePath = exePath;
             _args = arguments;
+            _serverPort = serverPort;
         }
 
         public void Start()
@@ -50,26 +69,22 @@ namespace ServerConsole.ServerManager
 
                 _process.Exited += (s, e) =>
                 {
-                    if (!_isShuttingDown)
-                    {
-                        Logger.InternalLog_h("Game process has exited. Terminating console...", LogLevel.Warning);
-                        _isShuttingDown = true;
-                        Environment.Exit(0);
-                    }
+                    Logger.InternalLog_h(
+                        _isShuttingDown
+                            ? "Game server process has fully exited."
+                            : "Game server process exited unexpectedly.",
+                        _isShuttingDown ? LogLevel.Success : LogLevel.Warning);
                 };
 
                 _process.OutputDataReceived += (s, e) => ParseUnityOutput(e.Data);
 
-                _process.ErrorDataReceived += (s, e) =>
-                {
-                    if (!string.IsNullOrEmpty(e.Data))
-                    {
-                        Logger.InternalLog_h($"[Unity-Error] {e.Data}", LogLevel.Error);
-                    }
-                };
+                // Unity writes its own Debug output to both stdout and stderr.
+                // Parse only the explicit game-console protocol on either stream.
+                _process.ErrorDataReceived += (s, e) => ParseUnityOutput(e.Data);
 
                 if (_process.Start())
                 {
+                    UpdateConsoleTitle(0, 0, _serverPort);
                     _process.BeginOutputReadLine();
                     _process.BeginErrorReadLine();
 
@@ -95,6 +110,11 @@ namespace ServerConsole.ServerManager
             while (IsRunning)
             {
                 string? input = Console.ReadLine();
+
+                if (input == null)
+                {
+                    break;
+                }
 
                 if (string.IsNullOrWhiteSpace(input) || !IsRunning)
                 {
@@ -132,9 +152,11 @@ namespace ServerConsole.ServerManager
                 _process?.StandardInput.WriteLine(payload);
                 _process?.StandardInput.Flush();
             }
-            catch
+            catch (Exception ex)
             {
-                // 忽略写入错误
+                Logger.InternalLog_h(
+                    $"Failed to send command '{cmdName}' to the game server: {ex.Message}",
+                    LogLevel.Error);
             }
         }
 
@@ -154,7 +176,13 @@ namespace ServerConsole.ServerManager
             if (data.StartsWith("RESPONSE:", StringComparison.OrdinalIgnoreCase))
             {
                 string response = data.Substring("RESPONSE:".Length);
-                Logger.Print($"[Unity.Response] {response}", ConsoleColor.Green);
+                Logger.Print($"[Server.Response] {response}", ConsoleColor.Green);
+                return;
+            }
+
+            if (data.StartsWith("STATUS:", StringComparison.OrdinalIgnoreCase))
+            {
+                ParseServerStatus(data.Substring("STATUS:".Length));
                 return;
             }
 
@@ -165,8 +193,46 @@ namespace ServerConsole.ServerManager
                 return;
             }
 
-            // 非协议输出，按 Unity 普通输出处理
-            Logger.Print($"[Unity] {data}", ConsoleColor.DarkGray);
+            // Deliberately ignore Unity's own Debug/engine output. Only OUT,
+            // RESPONSE and the legacy LOG protocol belong in this console.
+        }
+
+        private void ParseServerStatus(string payload)
+        {
+            string[] parts = payload.Split('|', 4);
+            if (parts.Length < 4 ||
+                !int.TryParse(parts[1], out int playerCount) ||
+                !int.TryParse(parts[2], out int playerLimit) ||
+                !int.TryParse(parts[3], out int port))
+            {
+                return;
+            }
+
+            UpdateConsoleTitle(playerCount, playerLimit, port > 0 ? port : _serverPort);
+
+            if (parts[0].Equals("READY", StringComparison.OrdinalIgnoreCase) && !_serverReady)
+            {
+                _serverReady = true;
+                Logger.Print("等待玩家加入...", ConsoleColor.Green);
+            }
+        }
+
+        private static void UpdateConsoleTitle(int playerCount, int playerLimit, int port)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            try
+            {
+                string limit = playerLimit > 0 ? playerLimit.ToString() : "?";
+                Console.Title = $"SiteFrostfall | 玩家: {playerCount}/{limit} | 端口: {port}";
+            }
+            catch (Exception)
+            {
+                // A redirected/no-window process may not expose a console title.
+            }
         }
 
         private void ParseOutMessage(string payload)
@@ -222,25 +288,52 @@ namespace ServerConsole.ServerManager
 
         public void Stop()
         {
-            if (_isShuttingDown)
+            lock (_shutdownLock)
             {
-                return;
-            }
-
-            _isShuttingDown = true;
-
-            try
-            {
-                if (_process != null && !_process.HasExited)
+                if (_process == null)
                 {
-                    Logger.InternalLog_h("Killing Unity process...", LogLevel.Warning);
-                    _process.Kill(true);
-                    _process.WaitForExit(1000);
+                    return;
                 }
-            }
-            catch (Exception ex)
-            {
-                Logger.InternalLog_h($"Error during process kill: {ex.Message}", LogLevel.Debug);
+
+                try
+                {
+                    if (_process.HasExited)
+                    {
+                        return;
+                    }
+
+                    _isShuttingDown = true;
+                    Logger.InternalLog_h(
+                        "Requesting graceful shutdown from the game server...",
+                        LogLevel.Warning);
+                    SendRemoteCommand("shutdown", Array.Empty<string>());
+
+                    if (!_process.WaitForExit(GracefulShutdownTimeoutMilliseconds))
+                    {
+                        Logger.InternalLog_h(
+                            "Game server did not exit in time; terminating its process tree...",
+                            LogLevel.Warning);
+                        _process.Kill(true);
+                        _process.WaitForExit();
+                    }
+
+                    // Drain redirected streams only after the process has exited.
+                    _process.WaitForExit();
+                }
+                catch (InvalidOperationException)
+                {
+                    // The process exited between the state check and shutdown request.
+                }
+                catch (Exception ex)
+                {
+                    Logger.InternalLog_h($"Error while stopping game server: {ex.Message}", LogLevel.Error);
+
+                    if (!_process.HasExited)
+                    {
+                        _process.Kill(true);
+                        _process.WaitForExit();
+                    }
+                }
             }
         }
 

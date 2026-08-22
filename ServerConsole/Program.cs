@@ -30,14 +30,25 @@ public class Program
 
         Logger.InternalLog_h($"Initializing site on PORT: {port}", LogLevel.Info);
 
-        // 启动进程
-        using (ServerInstance = new ServerProcess(EXE_PATH, $"--port {port}"))
+        Console.CancelKeyPress += OnCancelKeyPress;
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+
+        try
         {
-            ServerInstance.Start();
-            while (ServerInstance.IsRunning)
+            // 启动进程
+            using (ServerInstance = new ServerProcess(EXE_PATH, $"--port {port}", port.Value))
             {
-                Thread.Sleep(500);
+                ServerInstance.Start();
+                while (ServerInstance.IsRunning)
+                {
+                    Thread.Sleep(500);
+                }
             }
+        }
+        finally
+        {
+            Console.CancelKeyPress -= OnCancelKeyPress;
+            AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
         }
     }
 
@@ -89,4 +100,15 @@ public class Program
     }
 
     private static bool IsValidPort(int port) => port >= 1 && port <= 65535;
+
+    private static void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+    {
+        e.Cancel = true;
+        ServerInstance?.Stop();
+    }
+
+    private static void OnProcessExit(object? sender, EventArgs e)
+    {
+        ServerInstance?.Stop();
+    }
 }

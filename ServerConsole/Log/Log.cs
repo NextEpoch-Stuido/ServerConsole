@@ -125,7 +125,10 @@ namespace ServerConsole.Log
             string time = DateTime.Now.ToString("HH:mm:ss");
             string prefix = string.IsNullOrWhiteSpace(info) ? "[Unity]" : info;
 
-            StandardOutput.Printfln_c($"[{time}] {prefix} {message}", color);
+            // OUT messages are already rendered text. Never route them through
+            // Console.WriteLine(format, args), because URLs and other ordinary
+            // content can be mistaken for composite-format placeholders.
+            StandardOutput.Println_c($"[{time}] {prefix} {message}", color);
         }
     }
     public class StandardOutput
@@ -142,12 +145,18 @@ namespace ServerConsole.Log
         }
         public static void Printfln(string message, params object[] args)
         {
-            Console.WriteLine(message,args);
+            if (args == null || args.Length == 0)
+                Console.WriteLine(message);
+            else
+                Console.WriteLine(message, args);
         }
         public static void Printfln_c(string message,ConsoleColor color, params object[] args)
         {
             Console.ForegroundColor = color;
-            Console.WriteLine(message, args);
+            if (args == null || args.Length == 0)
+                Console.WriteLine(message);
+            else
+                Console.WriteLine(message, args);
             Console.ResetColor();
             }
 
@@ -163,12 +172,18 @@ namespace ServerConsole.Log
         }
         public static void Printf(string message, params object[] args)
         {
-            Console.Write(message, args);
+            if (args == null || args.Length == 0)
+                Console.Write(message);
+            else
+                Console.Write(message, args);
         }
         public static void Printf_c(string message, ConsoleColor color, params object[] args)
         {
             Console.ForegroundColor = color;
-            Console.Write(message, args);
+            if (args == null || args.Length == 0)
+                Console.Write(message);
+            else
+                Console.Write(message, args);
             Console.ResetColor();
         }
     }
