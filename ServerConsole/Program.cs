@@ -9,6 +9,7 @@ public class Program
     private const int DEFAULT_PORT = 7777;
     // 设为静态方便指令集调用（如 ExitCommand）
     public static ServerProcess? ServerInstance { get; private set; }
+    private static readonly Random random = new Random();
     private static Exception? _fatalError;
     private static int _fatalErrorReported;
 
@@ -29,7 +30,7 @@ public class Program
                 Console.ResetColor();
                 string? input = Console.ReadLine();
                 if (int.TryParse(input, out int p) && IsValidPort(p)) port = p;
-                else Logger.Print("Invalid port number. Please enter a number between 1 and 65535.",ConsoleColor.Red);
+                else Logger.Print("Invalid port number. Please enter a number between 1 and 65535.", ConsoleColor.Red);
             }
 
             Logger.InternalLog_h($"Initializing site on PORT: {port}", LogLevel.Info);
@@ -117,17 +118,28 @@ public class Program
             Console.Title = "SiteFrostfall | Dedicated Server Console";
         }
     }
-
-    private static void PrintBanner()
-    {
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(@"
+    const string Banner_1 = @"
  ███████╗██╗████████╗███████╗          ███████╗██████╗  ██████╗ ███████╗████████╗███████╗ █████╗ ██╗     ██╗     
  ██╔════╝██║╚══██╔══╝██╔════╝          ██╔════╝██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗██║     ██║     
  ███████╗██║   ██║   █████╗   ███████╗ █████╗  ██████╔╝██║   ██║███████╗   ██║   █████╗  ███████║██║     ██║     
  ╚════██║██║   ██║   ██╔══╝   ╚══════╝ ██╔══╝  ██╔══██╗██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██║██║     ██║     
  ███████║██║   ██║   ███████╗          ██║     ██║  ██║╚██████╔╝███████║   ██║   ██║     ██║  ██║███████╗███████╗
- ╚══════╝╚═╝   ╚═╝   ╚══════╝          ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝");
+ ╚══════╝╚═╝   ╚═╝   ╚══════╝          ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝";
+    const string Banner_2 = @"
+ ███████╗██╗████████╗███████╗          ██╗ ██╗ ██╗██╗ ███║    ██╗████████╗███████╗██████╗
+ ██╔════╝██║╚══██╔══╝██╔════╝          ██║ ██║ ██║██║ ██║██║  ██║╚══██╔══╝██╔════╝██╔══██╗
+ ███████╗██║   ██║   █████╗   ███████╗ ██║ ██║ ██║██║ ██║ ██║ ██║   ██║   █████╗  ██████╔╝
+ ╚════██║██║   ██║   ██╔══╝   ╚══════╝ ██║ ██║ ██║██║ ██║  ██║██║   ██║   ██╔══╝  ██╔══██╗
+ ███████║██║   ██║   ███████╗          ╚████████╝ ██║ ██║   ████║   ██║   ███████╗██║  ██║
+ ╚══════╝╚═╝   ╚═╝   ╚══════╝           ╚══════╝  ╚═╝ ╚═╝   ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝";
+    private static string GetBanner()
+    {
+        return (random.Next(100)<30) ? Banner_2 : Banner_1;
+    }
+    private static void PrintBanner()
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine(GetBanner());
 
         Console.ForegroundColor = ConsoleColor.DarkGray;
         Console.WriteLine(" -----------------------------------------------------------------------------------------------------------------");
