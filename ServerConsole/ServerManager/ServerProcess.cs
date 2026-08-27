@@ -45,8 +45,11 @@ namespace ServerConsole.ServerManager
         {
             if (!File.Exists(_exePath))
             {
-                Logger.InternalLog_h($"Target executable not found: '{_exePath}'", LogLevel.Error);
-                return;
+                var exception = new FileNotFoundException(
+                    $"Target executable not found: '{_exePath}'",
+                    _exePath);
+                Logger.InternalLog_h(exception.Message, LogLevel.Error);
+                throw exception;
             }
 
             try
@@ -102,37 +105,47 @@ namespace ServerConsole.ServerManager
             catch (Exception ex)
             {
                 Logger.InternalLog_h($"Failed to start server process: {ex.Message}", LogLevel.Error);
+                throw;
             }
         }
 
         private void InputLoop()
         {
-            while (IsRunning)
+            try
             {
-                string? input = Console.ReadLine();
-
-                if (input == null)
+                while (IsRunning)
                 {
-                    break;
-                }
+                    string? input = Console.ReadLine();
 
-                if (string.IsNullOrWhiteSpace(input) || !IsRunning)
-                {
-                    continue;
-                }
+                    if (input == null)
+                    {
+                        break;
+                    }
 
-                string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                string cmdName = parts[0].ToLowerInvariant();
-                string[] args = parts.Length > 1 ? parts[1..] : Array.Empty<string>();
+                    if (string.IsNullOrWhiteSpace(input) || !IsRunning)
+                    {
+                        continue;
+                    }
 
-                if (CommandRegistry.TryGetCommand(cmdName, out var command))
-                {
-                    command!.Execute(args);
+                    string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    string cmdName = parts[0].ToLowerInvariant();
+                    string[] args = parts.Length > 1 ? parts[1..] : Array.Empty<string>();
+
+                    if (CommandRegistry.TryGetCommand(cmdName, out var command))
+                    {
+                        command!.Execute(args);
+                    }
+                    else
+                    {
+                        SendRemoteCommand(cmdName, args);
+                    }
                 }
-                else
-                {
-                    SendRemoteCommand(cmdName, args);
-                }
+            }
+            catch (Exception ex)
+            {
+                // An exception on this background thread would otherwise terminate
+                // the whole console before the main thread can clean up the game.
+                Program.ReportFatalError(ex);
             }
         }
 
